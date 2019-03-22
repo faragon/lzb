@@ -27,140 +27,112 @@
 # Released under the BSD 3-Clause License (see the LICENSE file)
 #
 
-LC_ALL=C # ANSI C locale (disables Unicode support for ~20% speed-up)
-LZ_BUF_SIZE=16384  # Buffer size (the bigger, the slower, but more compression)
+globals() {
+	LC_ALL=C # ANSI C locale (disables Unicode support, ~20% speed-up)
+	LZ_BUF_SIZE=16384  # The bigger, the slower, but more compression
+	HEX_BUF_SIZE=$((LZ_BUF_SIZE * 2))
+	g_out="" # global variable for handling decompression output
+}
 
-# Helper functions
-st8() { printf %02x $(($1 & 0xff)) ; }
-st16() { printf %02x%02x $(($1 & 0xff)) $((($1 >> 8) & 0xff)) ; }
-st24() { printf %02x%02x%02x $(($1 & 0xff)) $((($1 >> 8) & 0xff)) \
-		$((($1 >> 16) & 0xff)) ; }
-st32() { printf %02x%02x%02x%02x $(($1 & 0xff)) $((($1 >> 8) & 0xff)) \
-		$((($1 >> 16) & 0xff)) $((($1 >> 24) & 0xff)) ; }
-ld8() { echo -n "$((0x${1:0:2}))" ; }
-ld16() { echo -n "$((0x${1:2:2}${1:0:2}))" ; }
-ld24() { echo -n "$((0x${1:4:2}${1:2:2}${1:0:2}))" ; }
-ld32() { echo -n "$((0x${1:6:2}${1:4:2}${1:2:2}${1:0:2}))" ; }
-bin2hex() { local LC_ALL=C IFS=""
-		while read -r -d '' -n 1 c ; do printf "%02x" "'$c" ; done ; }
-hex2bin() { while read -d '' -n 2 hl ; do printf "\x$hl" ; done ; }
-binop() { bin2hex | $1 | hex2bin ; }
+lz_globals() {
+	# Opcode header size in bits
+	H16B=2 H16aB=4 H16bB=4 H24B=4 H32B=4 H24aB=4 H24bB=4 H24cB=4
+	H40B=4 H72B=4 LH8B=4 LH16B=4 LH32B=4
+	# Opcode masks
+	OPMASK2=3 OPMASK4=15
+	# Range opcode id's
+	R16=0 R16a=9 R16b=13 R24=1 R32=2 R40=3 R24a=6 R24b=10 R24c=5 R72=7
+	# Literal opcode id's
+	L8=11 L16=14 L32=15
+	# Literal opcode limits
+	L8B=$((8 - LH8B)) L16B=$((16 - LH16B)) L32B=$((32 - LH32B))
+	L8R=$((1 << L8B)) L16R=$((1 << L16B)) L32R=$((1 << L32B))
+	# Range opcode distance and length
+	RD16B=13 RD16aB=8 RD16bB=10 RD24B=20 RD24aB=14 RD24bB=16 RD24cB=18
+	RD32B=22 RD40B=26 RD72B=32
+	RL16B=$((16 - H16B - RD16B)) RL16aB=$((16 - H16aB - RD16aB))
+	RL16bB=$((16 - H16bB - RD16bB)) RL24B=$((24 - H24B - RD24B))
+	RL24aB=$((24 - H24aB - RD24aB)) RL24bB=$((24 - H24bB - RD24bB))
+	RL24cB=$((24 - H24cB - RD24cB)) RL32B=$((32 - H32B - RD32B))
+	RL40B=$((40 - H40B - RD40B)) RL72B=32
+	# Reference opcode range:
+	RD16=$((1 << RD16B)) RL16=$((1 << RL16B)) RD16a=$((1 << RD16aB))
+	RL16a=$((1 << RL16aB)) RD16b=$((1 << RD16bB))
+	RL16b=$((1 << RL16bB)) RD24R=$((1 << RD24B)) RL24=$((1 << RL24B))
+	RD24a=$((1 << RD24aB)) RL24a=$((1 << RL24aB)) RD24b=$((1 << RD24bB))
+	RL24b=$((1 << RL24bB)) RD24c=$((1 << RD24cB))
+	RL24c=$((1 << RL24cB)) RD32=$((1 << RD32B)) RL32=$((1 << RL32B))
+	RD40=$((1 << RD40B)) RL40=$((1 << RL40B)) RD72R=$((0xffffffff))
+	RL72=$((0xffffffff))
+}
 
-# Custom LZ77 implementation constants
-
-# Opcode header size in bits
-HDR16B=2 HDR16SB=4 HDR16S2B=4 HDR24B=4 HDR32B=4 HDR24SB=4 HDR24S2B=4 HDR24S3B=4
-HDR40B=4 HDR72B=4 LHDR8B=4 LHDR16B=4 LHDR32B=4
-# Opcode masks
-OPMASK2=3 OPMASK4=15
-# Range opcode id's
-R16=0 R16S=9 R16S2=13 R24=1 R32=2 R40=3 R24S=6 R24S2=10 R24S3=5 R72=7
-# Literal opcode id's
-L8=11 L16=14 L32=15
-# Literal opcode limits
-L8B=$((8 - LHDR8B)) L16B=$((16 - LHDR16B)) L32B=$((32 - LHDR32B))
-L8R=$((1 << L8B)) L16R=$((1 << L16B)) L32R=$((1 << L32B))
-# Range opcode distance and length
-RD16B=13 RL16B=$((16 - HDR16B - RD16B))
-RD16SB=8 RL16SB=$((16 - HDR16SB - RD16SB))
-RD16S2B=10 RL16S2B=$((16 - HDR16S2B - RD16S2B))
-RD24B=20 RL24B=$((24 - HDR24B - RD24B))
-RD24SB=14 RL24SB=$((24 - HDR24SB - RD24SB))
-RD24S2B=16 RL24S2B=$((24 - HDR24S2B - RD24S2B))
-RD24S3B=18 RL24S3B=$((24 - HDR24S3B - RD24S3B))
-RD32B=22 RL32B=$((32 - HDR32B - RD32B))
-RD40B=26 RL40B=$((40 - HDR40B - RD40B))
-RD72B=32 RL72B=32
-# Reference opcode range:
-RD16R=$((1 << RD16B)) RL16R=$((1 << RL16B)) RD16SR=$((1 << RD16SB))
-RL16SR=$((1 << RL16SB)) RD16S2R=$((1 << RD16S2B))
-RL16S2R=$((1 << RL16S2B)) RD24R=$((1 << RD24B)) RL24R=$((1 << RL24B))
-RD24SR=$((1 << RD24SB)) RL24SR=$((1 << RL24SB)) RD24S2R=$((1 << RD24S2B))
-RL24S2R=$((1 << RL24S2B)) RD24S3R=$((1 << RD24S3B))
-RL24S3R=$((1 << RL24S3B)) RD32R=$((1 << RD32B)) RL32R=$((1 << RL32B))
-RD40R=$((1 << RD40B)) RL40R=$((1 << RL40B)) RD72R=$((0xffffffff))
-RL72R=$((0xffffffff))
-
-HEX_BUF_SIZE=$((LZ_BUF_SIZE * 2))
-g_out="" # global variable for handling decompression output
-
-enc_store_lit() {
+enc_st_lit() {
 	local size=$(((${#1}) / 2)) ; local sm1=$(($size - 1))
-	if ((sm1 < L8R)) ; then st8 $(((sm1 << LHDR8B) | L8))
-	elif ((sm1 < L16R)) ; then st16 $(((sm1 << LHDR16B) | L16))
+	if ((sm1 < L8R)) ; then st8 $(((sm1 << LH8B) | L8))
+	elif ((sm1 < L16R)) ; then st16 $(((sm1 << LH16B) | L16))
 	else	if ((sm1 >= L32R)) ; then
 			echo "out of range: aborting (!)" >&2 ; exit 1; fi
-		st32 $(((sm1 << LHDR32B) | L32)) ; fi
+		st32 $(((sm1 << LH32B) | L32)) ; fi
 	echo -n $1
 }
 
-enc_store_ref() {
-	local dist=$1 len=$2 f=nok
+enc_st_ref() {
+	local d=$1 l=$2 f=nok
 
 	# Opcode filter by distance
-	if ((dist < RD24R)) ; then
-		if ((dist < RD16SR)) ; then f=r16s
-		elif ((dist < RD16S2R)) ; then f=r16s2
-		elif ((dist < RD16R)) ; then f=r16
-		elif ((dist < RD24SR)) ; then f=r24s
-		elif ((dist < RD24S2R)) ; then f=r24s2
-		elif ((dist < RD24S3R)) ; then f=r24s3
-		else f=r24 ; fi
-	elif ((dist < RD32R)) ; then f=r32
-	elif ((dist < RD40R)) ; then f=r40 else f=r72 ; fi
+	if ((d < RD24R)) ; then
+		if ((d < RD16a)) ; then f=r16a ; elif ((d < RD16b))
+		then f=r16b ; elif ((d < RD16)) ; then f=r16
+		elif ((d < RD24a)) ; then f=r24a ; elif ((d < RD24b))
+		then f=r24b ; elif ((d < RD24c)) ; then f=r24c ; else f=r24 ; fi
+	elif ((d < RD32)) ; then f=r32
+	elif ((d < RD40)) ; then f=r40 else f=r72 ; fi
 
 	# Opcode chosen by distance and run length
 	case $f in
-	r16s)	if ((len < RL16SR)) ; then
-			st16 $(((dist | (len << RD16SB)) << \
-				HDR16SB | R16S)) ; return ; fi ;&
-	r16s2)	if ((len < RL16S2R)) ; then
-			st16 $(((dist | (len << RD16S2B)) << \
-				HDR16S2B | R16S2)) ; return ; fi ;&
-	r16)	if ((len < RL16R)) ; then
-			st16 $(((dist | (len << RD16B)) << \
-				HDR16B | R16)) ; return ; fi ;&
-	r24s)	if ((len < RL24SR)) ; then
-			st24 $(((dist | (len << RD24SB)) << \
-				HDR24SB | R24S)) ; return ; fi ;&
-	r24s2)	if ((len < RL24S2R)) ; then
-			st24 $(((dist | (len << RD24S2B)) << \
-				HDR24S2B | R24S2)) ; return ; fi ;&
-	r24s3)	if ((len < RL24S3R)) ; then
-			st24 $(((dist | (len << RD24S3B)) << \
-				HDR24S3B | R24S3)) ; return ; fi ;&
-	r24)	if ((len < RL24R)) ; then
-			st24 $(((dist | (len << RD24B)) << \
-				HDR24B | R24)) ; return ; fi ;&
-	r32)	if ((len < RL32R)) ; then
-			st32 $(((dist | (len << RD32B)) << \
-				HDR32B | R32)) ; return ; fi ;&
-	r40)	if ((len < RL40R)) ; then
-			st8 $((0xff & ((dist << HDR40B) | R40)))
-			st32 $(((dist >> HDR40B) | \
-				(len << (RD40B - HDR40B)))) ; return ; fi ;&
-	r72)	if ((len < RL72R)) ; then
-			st8 $R72 ; st32 $dist ; st32 $len ; return ; fi ;&
+	r16a)	if ((l < RL16a)) ; then st16 $(((d | (l << RD16aB)) << \
+						 H16aB | R16a)) ; return ; fi ;&
+	r16b)	if ((l < RL16b)) ; then st16 $(((d | (l << RD16bB)) << \
+						 H16bB | R16b)) ; return ; fi ;&
+	r16)	if ((l < RL16)) ; then st16 $(((d | (l << RD16B)) << \
+						H16B | R16)) ; return ; fi ;&
+	r24a)	if ((l < RL24a)) ; then st24 $(((d | (l << RD24aB)) << \
+						 H24aB | R24a)) ; return ; fi ;&
+	r24b)	if ((l < RL24b)) ; then st24 $(((d | (l << RD24bB)) << \
+						 H24bB | R24b)) ; return ; fi ;&
+	r24c)	if ((l < RL24c)) ; then st24 $(((d | (l << RD24cB)) << \
+						 H24cB | R24c)) ; return ; fi ;&
+	r24)	if ((l < RL24)) ; then st24 $(((d | (l << RD24B)) << \
+						H24B | R24)) ; return ; fi ;&
+	r32)	if ((l < RL32)) ; then st32 $(((d | (l << RD32B)) << \
+						H32B | R32)) ; return ; fi ;&
+	r40)	if ((l < RL40)) ; then
+			st8 $((0xff & ((d << H40B) | R40)))
+			st32 $(((d >> H40B) | \
+				(l << (RD40B - H40B)))) ; return ; fi ;&
+	r72)	if ((l < RL72)) ; then
+			st8 $R72 ; st32 $d ; st32 $l ; return ; fi ;&
 	esac
 }
 
-enc_store_blk_brk() {
+enc_st_blk_brk() {
 	st8 $R72 ; st32 $((0xffffffff)) ; st32 $((0xffffffff)) ; }
 
 # Encoding/compression function
 lzb_enc() {
+	lz_globals
 	declare -A lut
-	local buf clx clxs dist1 i l lg last len len1 plit w32
+	local buf clx clxs d1 i l lg last len l1 plit w32
 	for ((lg = 0; ; lg=$((lg + l)))) ; do
 		# Reset LUT of references and load the buffer
 		lut=() ; read -N $HEX_BUF_SIZE buf ; l=${#buf}
 
 		# Input < 8 bytes: store (16 is for the hex representation)
 		if ((l < 16)) ; then
-			if ((l > 0)) ; then enc_store_lit $buf ; fi ; break ; fi
+			if ((l > 0)) ; then enc_st_lit $buf ; fi ; break ; fi
 
 		# Insert block separator between compressed blocks
-		if ((lg > 0)) ; then enc_store_blk_brk ; fi
+		if ((lg > 0)) ; then enc_st_blk_brk ; fi
 
 		# Data compression loop
 		smx=$((l - 8))
@@ -174,8 +146,7 @@ lzb_enc() {
 				i=$((i + 2)) ; continue ; fi
 
 			# Match: compare to find the longest match
-			len=8
-			for clxs in 8192 128 8 ; do
+			len=8 ; for clxs in 8192 128 8 ; do
 				clx=$((((l - i) / clxs) * clxs))
 				for ((; len < clx; len += clxs)) ; do
 					if [[ ${buf:$((i + len)):$clxs} != \
@@ -187,22 +158,21 @@ lzb_enc() {
 					break ; fi ; done
 
 			# Avoid encoding short distant references
-			len1=$(((len / 2) - 4))
-			dist1=$((((i - last) / 2) - 1))
-			if ((len1 < 4 && dist1 > RD32R)) ; then
+			l1=$(((len / 2) - 4)) ; d1=$((((i - last) / 2) - 1))
+			if ((l1 < 4 && d1 > RD32)) ; then
 				i=$((i + 2)) ; continue ; fi
 
 			# Store pending literals
 			if ((plit != i)) ; then
-				enc_store_lit ${buf:plit:$((i - plit))} ; fi
+				enc_st_lit ${buf:plit:$((i - plit))} ; fi
 
 			# Store reference
-			enc_store_ref $dist1 $len1 ; i=$((i + len)) ; plit=$i
+			enc_st_ref $d1 $l1 ; i=$((i + len)) ; plit=$i
 		done
 
 		# Store pending literals
 		if (((l - plit) > 0)) ; then
-			enc_store_lit ${buf:plit:$((l - plit))} ; fi
+			enc_st_lit ${buf:plit:$((l - plit))} ; fi
 	done
 	lut=()
 }
@@ -219,16 +189,16 @@ reccpy() { # recursive copy (i.e. allowing references to future data)
 	else reccpy1 $dist $len ; fi # Overlapped copy
 }
 
-dec_load_ref() {
+dec_ld_ref() {
 	local dist=$(($1 * 2)) len=$(($2 * 2)) ; reccpy $dist $len ; }
 
-dec_load_lit() { # $1: literal count
+dec_ld_lit() { # $1: literal count
 	local aux ; read -N $(($1 * 2)) aux ; g_out+=$aux ; }
 
 # Decoding/decompression function
 lzb_dec() {
-	local b0b b0 b1 b12 b123 b1234 b32 cnt dist len dist0 len0 mix op
-	g_out=
+	lz_globals
+	local b0b b0 b1 b12 b123 b1234 b32 cnt dist len dist0 len0 m op
 	# Opcode processing loop (literal and reference opcodes)
 	for ((;;)) ; do
 		read -N 2 b0
@@ -237,83 +207,90 @@ lzb_dec() {
 		# 2-bit opcode processing
 		b0b=$(ld8 $b0)
 		if (((b0b & OPMASK2) == R16)) ; then
-			read -N 2 b1 ; mix=$(($(ld16 $b0$b1) >> HDR16B))
-			dec_load_ref $(((mix & ((1 << RD16B) - 1)) + 1)) \
-				     $(((mix >> RD16B) + 4))
+			read -N 2 b1 ; m=$(($(ld16 $b0$b1) >> H16B))
+			dec_ld_ref $(((m & ((1 << RD16B) - 1)) + 1)) \
+				     $(((m >> RD16B) + 4))
 			continue ; fi
 
 		# 4-bit opcode processing
 		op=$((b0b & OPMASK4))
 		case $op in
-		$R16S2)	read -N 2 b1 ; mix=$(($(ld16 $b0$b1) >> HDR16S2B))
-			dec_load_ref $(((mix & ((1 << RD16S2B) - 1)) + 1)) \
-				     $(((mix >> RD16S2B) + 4))
-			continue ;;
-		$R16S)	read -N 2 b1 ; mix=$(($(ld16 $b0$b1) >> HDR16SB))
-			dec_load_ref $(((mix & ((1 << RD16SB) - 1)) + 1)) \
-				     $(((mix >> RD16SB) + 4))
-			continue ;;
-		$R24S3)	read -N 4 b12 ; mix=$(($(ld24 $b0$b12) >> HDR24S3B))
-			dec_load_ref $(((mix & ((1 << RD24S3B) - 1)) + 1)) \
-				     $(((mix >> RD24S3B) + 4))
-			continue ;;
-		$R24S2)	read -N 4 b12 ; mix=$(($(ld24 $b0$b12) >> HDR24S2B))
-			dec_load_ref $(((mix & ((1 << RD24S2B) - 1)) + 1)) \
-				     $(((mix >> RD24S2B) + 4))
-			continue ;;
-		$R24S)	read -N 4 b12 ; mix=$(($(ld24 $b0$b12) >> HDR24SB))
-			dec_load_ref $(((mix & ((1 << RD24SB) - 1)) + 1)) \
-				     $(((mix >> RD24SB) + 4))
-			continue ;;
-		$R24)	read -N 4 b12 ; mix=$(($(ld24 $b0$b12) >> HDR24B))
-			dec_load_ref $(((mix & ((1 << RD24B) - 1)) + 1)) \
-				     $(((mix >> RD24B) + 4))
-			continue ;;
-		$R32)	read -N 6 b123 ; mix=$(($(ld32 $b0$b123) >> HDR32B))
-			dec_load_ref $(((mix & ((1 << RD32B) - 1)) + 1)) \
-				     $(((mix >> RD32B) + 4))
-			continue ;;
-		$R40)	read -N 8 b1234 ; mix=$(ld32 $b1234)
-			dec_load_ref $((((((b0b >> HDR40B) | (mix << HDR40B)) &\
-					  ((1 << RD40B) - 1))) + 1)) \
-				     $(((mix >> (RD40B - HDR40B)) + 4))
+		$R16b)	read -N 2 b1 ; m=$(($(ld16 $b0$b1) >> H16bB))
+			dec_ld_ref $(((m & ((1 << RD16bB) - 1)) + 1)) \
+				   $(((m >> RD16bB) + 4)) ; continue ;;
+		$R16a)	read -N 2 b1 ; m=$(($(ld16 $b0$b1) >> H16aB))
+			dec_ld_ref $(((m & ((1 << RD16aB) - 1)) + 1)) \
+				   $(((m >> RD16aB) + 4)) ; continue ;;
+		$R24c)	read -N 4 b12 ; m=$(($(ld24 $b0$b12) >> H24cB))
+			dec_ld_ref $(((m & ((1 << RD24cB) - 1)) + 1)) \
+				   $(((m >> RD24cB) + 4)) ; continue ;;
+		$R24b)	read -N 4 b12 ; m=$(($(ld24 $b0$b12) >> H24bB))
+			dec_ld_ref $(((m & ((1 << RD24bB) - 1)) + 1)) \
+				   $(((m >> RD24bB) + 4)) ; continue ;;
+		$R24a)	read -N 4 b12 ; m=$(($(ld24 $b0$b12) >> H24aB))
+			dec_ld_ref $(((m & ((1 << RD24aB) - 1)) + 1)) \
+				   $(((m >> RD24aB) + 4)) ; continue ;;
+		$R24)	read -N 4 b12 ; m=$(($(ld24 $b0$b12) >> H24B))
+			dec_ld_ref $(((m & ((1 << RD24B) - 1)) + 1)) \
+				   $(((m >> RD24B) + 4)) ; continue ;;
+		$R32)	read -N 6 b123 ; m=$(($(ld32 $b0$b123) >> H32B))
+			dec_ld_ref $(((m & ((1 << RD32B) - 1)) + 1)) \
+				   $(((m >> RD32B) + 4)) ; continue ;;
+		$R40)	read -N 8 b1234 ; m=$(ld32 $b1234)
+			dec_ld_ref $((((((b0b >> H40B) | (m << H40B)) &\
+					((1 << RD40B) - 1))) + 1)) \
+				   $(((m >> (RD40B - H40B)) + 4))
 			continue ;;
 		$R72)	read -N 8 dist0 ; read -N 8 len0
 			# Block separator handling: flush output
 			if [[ $dist0 == ffffffff && $len0 == ffffffff ]] ; then
 				echo -n $g_out ; g_out= ; continue ; fi
-			dec_load_ref $(($(ld32 $dist0) + 1)) \
-				     $(($(ld32 $len0) + 4))
+			dec_ld_ref $(($(ld32 $dist0) + 1)) \
+				   $(($(ld32 $len0) + 4)) ; continue ;;
+		$L8)	cnt=$(((b0b >> LH8B) + 1)) ; dec_ld_lit $cnt
 			continue ;;
-		$L8)	cnt=$(((b0b >> LHDR8B) + 1)) ; dec_load_lit $cnt
-			continue ;;
-		$L16)	read -N 2 b1 ; cnt=$((($(ld16 $b0$b1) >> LHDR16B) + 1))
-			dec_load_lit $cnt
-			continue ;;
+		$L16)	read -N 2 b1 ; cnt=$((($(ld16 $b0$b1) >> LH16B) + 1))
+			dec_ld_lit $cnt ; continue ;;
 		$L32)	read -N 6 b123
-			cnt=$((($(ld32 $b0$b123) >> LHDR32B) + 1))
-			dec_load_lit $cnt
-			continue ;;
-		*)	echo "UNKNOWN OPCODE (0x$b0): aborting!" >&2
-			exit 1 ;;
+			cnt=$((($(ld32 $b0$b123) >> LH32B) + 1))
+			dec_ld_lit $cnt ; continue ;;
+		*)	echo "UNKNOWN OPCODE (0x$b0): aborting!" >&2 ; exit 1 ;;
 		esac
 	done
 	echo -n $g_out ; g_out=
 }
 
+# Helper functions
+st8() { printf %02x $(($1 & 0xff)) ; }
+st16() { printf %02x%02x $(($1 & 0xff)) $((($1 >> 8) & 0xff)) ; }
+st24() { printf %02x%02x%02x $(($1 & 0xff)) $((($1 >> 8) & 0xff)) \
+		$((($1 >> 16) & 0xff)) ; }
+st32() { printf %02x%02x%02x%02x $(($1 & 0xff)) $((($1 >> 8) & 0xff)) \
+		$((($1 >> 16) & 0xff)) $((($1 >> 24) & 0xff)) ; }
+ld8() { echo -n "$((0x${1:0:2}))" ; }
+ld16() { echo -n "$((0x${1:2:2}${1:0:2}))" ; }
+ld24() { echo -n "$((0x${1:4:2}${1:2:2}${1:0:2}))" ; }
+ld32() { echo -n "$((0x${1:6:2}${1:4:2}${1:2:2}${1:0:2}))" ; }
+bin2hex() { local LC_ALL=C IFS=""
+		while read -r -d '' -n 1 c ; do printf "%02x" "'$c" ; done ; }
+hex2bin() { while read -d '' -n 2 hl ; do printf "\x$hl" ; done ; }
+binop() { bin2hex | $1 | hex2bin ; }
 show_help() {
 	local P IFS='/' ; for P in $1 ; do continue ; done
-	echo -e "LZB data compression" >&2
+	echo -e "LZB data compression and other tools" >&2
 	echo -e "Copyright (c) 2019 F. Aragon. All rights reserved." >&2
 	echo -e "Released under the BSD 3-Clause License" >&2
 	echo -e "Syntax: $P [-d|-h]\nExamples:" >&2
-	echo -e "\tEncoding: $P <input_file >output_file" >&2
-	echo -e "\tDecoding: $P -d <input_file >output_file" >&2
+	echo -e "\tCompress: $P <input >output" >&2
+	echo -e "\tDecompress: $P -d <input >output" >&2
 	echo -e "\tInstallation: sudo cp lzb /usr/local/bin" >&2
 	echo -e "\tHelp: $P -h" >&2 ; }
-
 syntax_error() {
 	echo "Syntax error (!)" >&2 ; show_help $1 ; }
+
+# main program start
+
+globals
 
 if (($# == 0)) ; then
 	binop lzb_enc
