@@ -2,26 +2,9 @@
 #
 # lzb
 #
-# LZ77 data compression in pure Bash language (not using external programs)
+# LZ77 data compression an other utilities in pure Bash language
 #
-# This is a rewrite in Bash of the libsrt's library 'enc' example, not
-# being compatible with its format, because of simplicity (the Bash version
-# is hundred thousands times slower than the C version, and probably million
-# times slower as the buffer size is increased). E.g. libsrt library 'enc'
-# example has a infinite-size dictionary ("-ezh" flag) which is not supported
-# by this program, nor the LUT tuning for speed, etc.
-#
-# lzb repository: https://github.com/faragon/lzb
-# libsrt repository: https://github.com/faragon/libsrt
-# libsrt LZ77: https://github.com/faragon/libsrt/blob/master/src/saux/senc.c
-#
-# Examples:
-#
-# sudo cp lzb /usr/local/bin  # Installation
-# sudo rm /usr/local/bin/lzb  # Uninstallation
-# lzb <myfile >myfile.lzb     # Compression
-# lzb -d <myfile.lzb >myfile2 # Decompression
-# diff myfile myfile2         # Check the comp/decomp cycle
+# Based on https://github.com/faragon/libsrt
 #
 # Copyright (c) 2019 F. Aragon. All rights reserved.
 # Released under the BSD 3-Clause License (see the LICENSE file)
@@ -278,6 +261,53 @@ crc32() {
 	printf "%08x\n" $((0xffffffff & ~c))
 }
 
+b64_luts() {
+	declare -g -A d e
+	local c i j=0 p=printf
+	for ((i = 65; i <= 90; i++, j++)) ; do
+		c=$(st8 $i) ; e[$j]=$c ; d[$($p "\x$c")]=$j ; done
+	for ((i = 97; i <= 122; i++, j++)) ; do
+		c=$(st8 $i) ; e[$j]=$c ; d[$($p "\x$c")]=$j ; done
+	for ((i = 48; i <= 57; i++, j++)) ; do
+		c=$(st8 $i) ; e[$j]=$c ; d[$($p "\x$c")]=$j ; done
+	for i in 43 47 ; do
+		c=$(st8 $i) ; e[$j]=$c ; d[$($p "\x$c")]=$j ; j=$((j+1)) ; done
+	d[=]=-1
+}
+
+enc_b64() {
+	local c ; b64_luts
+	while read -N 6 c ; do
+		printf "\x${e[$((0x${c:0:2} >> 2))]}"
+		printf "\x${e[$(((0x${c:0:2} & 3) << 4 | (0x${c:2:2}) >> 4))]}"
+		printf "\x${e[$(((0x${c:2:2} & 15) << 2 | 0x${c:4:2} >> 6))]}"
+		printf "\x${e[$((0x${c:4:2} & 0x3f))]}"
+	done
+	if ((${#c} == 4)) ; then
+		printf "\x${e[$((0x${c:0:2} >> 2))]}"
+		printf "\x${e[$(((0x${c:0:2} & 3) << 4 | (0x${c:2:2}) >> 4))]}"
+		printf "\x${e[$(((0x${c:2:2} & 15) << 2))]}="
+	elif ((${#c} == 2)) ; then
+		printf "\x${e[$((0x${c:0:2} >> 2))]}"
+		printf "\x${e[$(((0x${c:0:2} & 3) << 4))]}=="
+	fi
+}
+
+dec_b64() {
+	local i r s t u ; b64_luts
+	while read -N 4 i ; do
+		r=${d[${i:0:1}]} ; s=${d[${i:1:1}]}
+		t=${d[${i:2:1}]} ; u=${d[${i:3:1}]}
+		if ((u >= 0)) ; then
+			st8 $((r << 2 | s >> 4)) ; st8 $((s << 4 | t >> 2))
+			st8 $(((t << 6) | u)) ; continue
+		fi
+		st8 $((r << 2 | s >> 4))
+		if ((t >= 0)) ; then st8 $((s  << 4 | t >> 2)) ; fi
+		break
+	done
+}
+
 # Helper functions
 
 st8() { printf %02x $(($1 & 0xff)) ; }
@@ -290,10 +320,10 @@ ld8() { echo -n "$((0x${1:0:2}))" ; }
 ld16() { echo -n "$((0x${1:2:2}${1:0:2}))" ; }
 ld24() { echo -n "$((0x${1:4:2}${1:2:2}${1:0:2}))" ; }
 ld32() { echo -n "$((0x${1:6:2}${1:4:2}${1:2:2}${1:0:2}))" ; }
-bin2hex() { local LC_ALL=C IFS=""
-		while read -r -d '' -n 1 c ; do printf "%02x" "'$c" ; done ; }
-hex2bin() { while read -d '' -n 2 hl ; do printf "\x$hl" ; done ; }
-binop() { bin2hex | $1 | hex2bin ; }
+enc_hex() { local LC_ALL=C IFS=""
+	    while read -r -d '' -n 1 c ; do printf "%02x" "'$c" ; done ; }
+dec_hex() { while read -d '' -n 2 hl ; do printf "\x$hl" ; done ; }
+binop() { enc_hex | $1 | dec_hex ; }
 show_help() {
 	local P IFS='/' ; for P in $1 ; do continue ; done
 	echo -e "LZB data compression and other tools" >&2
@@ -303,8 +333,10 @@ show_help() {
 	echo -e "\tCompress: $P <input >output" >&2
 	echo -e "\tDecompress: $P -d <input >output" >&2
 	echo -e "\tCRC-32: $P -crc32 <input >output" >&2
-	echo -e "\tBin to hex: $P -hex <input >output" >&2
-	echo -e "\tHex to bin: $P -hex2bin <input >output" >&2
+	echo -e "\tHex encoding: $P -hex <input >output" >&2
+	echo -e "\tHex decoding: $P -dhex <input >output" >&2
+	echo -e "\tBase64 encoding: $P -b64 <input >output" >&2
+	echo -e "\tBase64 decoding: $P -db64 <input >output" >&2
 	echo -e "\tHelp: $P -h" >&2
 	echo -e "\tInstallation: sudo cp lzb /usr/local/bin" >&2 ; }
 syntax_error() {
@@ -317,11 +349,8 @@ globals
 if (($# == 0)) ; then
 	binop lzb_enc
 else	case $1 in
-	-h) show_help $0 ;;
-	-d) binop lzb_dec ;;
-	-crc32) bin2hex | crc32 ;;
-	-hex)  bin2hex ;;
-	-hex2bin) hex2bin ;;
-	*) syntax_error $0 ;;
+	-h) show_help $0 ;; -d) binop lzb_dec ;; -crc32) enc_hex | crc32 ;;
+	-hex)  enc_hex ;; -dhex) dec_hex ;; -b64)  enc_hex | enc_b64 ;;
+	-db64) dec_b64 | dec_hex ;; *) syntax_error $0 ;;
 	esac
 fi

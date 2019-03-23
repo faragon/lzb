@@ -3,11 +3,11 @@ LZB: LZ77 data compression and other utilities in pure Bash language
 
 LZB is a data compression/decompression utility written in Bash language,
 using no external programs. It also includes additional utilities, like
-CRC-32, bin to hex, hex to bin.
+CRC-32, hexadecimal and base64 encoding/decoding.
 
 Key points:
 
-* Small: 11KB (including comments)
+* Small: 12KB (including comments)
 * Efficient: e.g. 1111111111 is reduced to 7 bytes. 20 x "1", to 7 bytes, too.
 * Platform-independent: it works in any platform supported by Bash 4 or later
 * Complete: it supports unlimited file size for compression and decompression
@@ -30,7 +30,7 @@ sudo rm /usr/local/bin/lzb # Uninstallation
 ```
 Syntax:
 ```
-        lzb [-d|-crc32|-hex|-hex2bin|-h]
+        lzb [-d|-crc32|-hex|-dhex|-b64|-db64|-h]
 ```
 Help:
 ```
@@ -53,13 +53,21 @@ CRC-32:
 ```
         lzb -crc32 <input
 ```
-Bin to hex:
+Hexadecimal encoding:
 ```
         lzb -hex <input >output
 ```
-Hex to bin:
+Hexadecimal decoding:
 ```
-        lzb -hex2bin <input >output
+        lzb -dhex <input >output
+```
+Base64 encoding:
+```
+        lzb -b64 <input >output
+```
+Base64 decoding:
+```
+        lzb -db64 <input >output
 ```
 
 Internals
