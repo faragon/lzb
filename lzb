@@ -308,6 +308,21 @@ dec_b64() {
 	done
 }
 
+cut() {
+	local bs=$((64 * 1024)) off=$(($1 * 2)) size=$((($2 + 0) * 2))
+	local sdb=$(((size / bs) * bs)) c i
+	if ((off)) ; then read -N $off ; fi
+	if ((size == 0)) ; then
+		while read -N $bs c ; do echo -n "$c" ; done
+		echo -n "$c" ; return ; fi
+	for ((i = 0; i < sdb; i+=bs)) ; do
+		if ! read -N $bs c ; then echo -n "$c" ; return ; fi
+		echo -n "$c" ; done
+	i=$((size - i)) ; if ((i)) ; then read -N $i c ; echo -n "$c" ; fi
+}
+
+head() { local s=$(($1 + 0)) ; if ((s == 0)) ; then return ; fi ; cut 0 $@ ; }
+
 # Helper functions
 
 st8() { printf %02x $(($1 & 0xff)) ; }
@@ -323,20 +338,22 @@ ld32() { echo -n "$((0x${1:6:2}${1:4:2}${1:2:2}${1:0:2}))" ; }
 enc_hex() { local LC_ALL=C IFS=""
 	    while read -r -d '' -n 1 c ; do printf "%02x" "'$c" ; done ; }
 dec_hex() { while read -d '' -n 2 hl ; do printf "\x$hl" ; done ; }
-binop() { enc_hex | $1 | dec_hex ; }
+binop() { enc_hex | $@ | dec_hex ; }
 show_help() {
 	local P IFS='/' ; for P in $1 ; do continue ; done
 	echo -e "LZB data compression and other tools" >&2
 	echo -e "Copyright (c) 2019 F. Aragon. All rights reserved." >&2
 	echo -e "Released under the BSD 3-Clause License" >&2
 	echo -e "Syntax: $P [-d|-crc32|-h]\nExamples:" >&2
-	echo -e "\tCompress: $P <input >output" >&2
-	echo -e "\tDecompress: $P -d <input >output" >&2
-	echo -e "\tCRC-32: $P -crc32 <input >output" >&2
-	echo -e "\tHex encoding: $P -hex <input >output" >&2
-	echo -e "\tHex decoding: $P -dhex <input >output" >&2
-	echo -e "\tBase64 encoding: $P -b64 <input >output" >&2
-	echo -e "\tBase64 decoding: $P -db64 <input >output" >&2
+	echo -e "\tCompress: $P <in <out" >&2
+	echo -e "\tDecompress: $P -d <in <out" >&2
+	echo -e "\tCRC-32: $P -crc32 <in <out" >&2
+	echo -e "\tHex encoding: $P -hex <in <out" >&2
+	echo -e "\tHex decoding: $P -dhex <in <out" >&2
+	echo -e "\tBase64 encoding: $P -b64 <in <out" >&2
+	echo -e "\tBase64 decoding: $P -db64 <in <out" >&2
+	echo -e "\t'head' (get first N bytes): $P -head N <in <out" >&2
+	echo -e "\t'cut' (skip N bytes, get M bytes): $P -cut N M <in <out" >&2
 	echo -e "\tHelp: $P -h" >&2
 	echo -e "\tInstallation: sudo cp lzb /usr/local/bin" >&2 ; }
 syntax_error() {
@@ -351,6 +368,7 @@ if (($# == 0)) ; then
 else	case $1 in
 	-h) show_help $0 ;; -d) binop lzb_dec ;; -crc32) enc_hex | crc32 ;;
 	-hex)  enc_hex ;; -dhex) dec_hex ;; -b64)  enc_hex | enc_b64 ;;
-	-db64) dec_b64 | dec_hex ;; *) syntax_error $0 ;;
+	-db64) dec_b64 | dec_hex ;; -cut) binop cut ${@:2} ;;
+	-head) binop head ${@:2} ;; *) syntax_error $0
 	esac
 fi

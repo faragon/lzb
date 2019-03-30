@@ -2,12 +2,16 @@ LZB: LZ77 data compression and other utilities in pure Bash language
 ===
 
 LZB is a data compression/decompression utility written in Bash language,
-using no external programs. It also includes additional utilities, like
-CRC-32, hexadecimal and base64 encoding/decoding.
+using no external programs. It also includes additional utilities:
+
+- CRC-32
+- hexadecimal encoding/decoding
+- base64 encoding/decoding
+- "head" and "cut" commands
 
 Key points:
 
-* Small: 12KB (including comments)
+* Small: 13KB (including comments)
 * Efficient: e.g. 1111111111 is reduced to 7 bytes. 20 x "1", to 7 bytes, too.
 * Platform-independent: it works in any platform supported by Bash 4 or later
 * Complete: it supports unlimited file size for compression and decompression
@@ -68,6 +72,14 @@ Base64 encoding:
 Base64 decoding:
 ```
         lzb -db64 <input >output
+```
+'head' command (get first N bytes):
+```
+        lzb -head N <input >output
+```
+'cut' command (skip first N bytes, and take next M bytes):
+```
+        lzb -cut N M <input >output
 ```
 
 Internals
