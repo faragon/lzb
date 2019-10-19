@@ -11,8 +11,8 @@ using no external programs. It also includes additional utilities:
 
 Key points:
 
-* Small: 13KB (including comments)
-* Efficient: e.g. 1111111111 is reduced to 7 bytes. 20 x "1", to 7 bytes, too.
+* Small: 11KB (including comments)
+* Efficient: e.g. 1111111111 is reduced to 6 bytes. 20 x "1" to 7 bytes, 1280 to 8 bytes, etc.
 * Platform-independent: it works in any platform supported by Bash 4 or later
 * Complete: it supports unlimited file size for compression and decompression
 * Vintage: compress and decompress at 1981 speeds!

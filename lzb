@@ -15,95 +15,39 @@ globals() {
 	LZ_BUF_SIZE=16384  # The bigger, the slower, but more compression
 	HEX_BUF_SIZE=$((LZ_BUF_SIZE * 2))
 	g_out="" # global variable for handling decompression output
-}
-
-lz_globals() {
-	# Opcode header size in bits
-	H16B=2 H16aB=4 H16bB=4 H24B=4 H32B=4 H24aB=4 H24bB=4 H24cB=4
-	H40B=4 H72B=4 LH8B=4 LH16B=4 LH32B=4
-	# Opcode masks
-	OPMASK2=3 OPMASK4=15
-	# Range opcode id's
-	R16=0 R16a=9 R16b=13 R24=1 R32=2 R40=3 R24a=6 R24b=10 R24c=5 R72=7
-	# Literal opcode id's
-	L8=11 L16=14 L32=15
-	# Literal opcode limits
-	L8B=$((8 - LH8B)) L16B=$((16 - LH16B)) L32B=$((32 - LH32B))
-	L8R=$((1 << L8B)) L16R=$((1 << L16B)) L32R=$((1 << L32B))
-	# Range opcode distance and length
-	RD16B=13 RD16aB=8 RD16bB=10 RD24B=20 RD24aB=14 RD24bB=16 RD24cB=18
-	RD32B=22 RD40B=26 RD72B=32
-	RL16B=$((16 - H16B - RD16B)) RL16aB=$((16 - H16aB - RD16aB))
-	RL16bB=$((16 - H16bB - RD16bB)) RL24B=$((24 - H24B - RD24B))
-	RL24aB=$((24 - H24aB - RD24aB)) RL24bB=$((24 - H24bB - RD24bB))
-	RL24cB=$((24 - H24cB - RD24cB)) RL32B=$((32 - H32B - RD32B))
-	RL40B=$((40 - H40B - RD40B)) RL72B=32
-	# Reference opcode range:
-	RD16=$((1 << RD16B)) RL16=$((1 << RL16B)) RD16a=$((1 << RD16aB))
-	RL16a=$((1 << RL16aB)) RD16b=$((1 << RD16bB))
-	RL16b=$((1 << RL16bB)) RD24R=$((1 << RD24B)) RL24=$((1 << RL24B))
-	RD24a=$((1 << RD24aB)) RL24a=$((1 << RL24aB)) RD24b=$((1 << RD24bB))
-	RL24b=$((1 << RL24bB)) RD24c=$((1 << RD24cB))
-	RL24c=$((1 << RL24cB)) RD32=$((1 << RD32B)) RL32=$((1 << RL32B))
-	RD40=$((1 << RD40B)) RL40=$((1 << RL40B)) RD72R=$((0xffffffff))
-	RL72=$((0xffffffff))
+	LZOP_BITS=2 ; LZOP_MASK=$(((1 << LZOP_BITS) - 1))
+	LZOP_RV_LS_MASK=1 ; LZOP_RV_LS=0 ; LZOP_RV_LV=1 ; LZOP_LV=3
+	LZOP_RV_LS_LBITS=2
+	LZOP_RV_LS_LMASK=$(((1 << LZOP_RV_LS_LBITS) - 1))
+	LZOP_RV_LS_LSHIFT=$LZOP_BITS
+	LZOP_RV_LS_LRANGE=$((LZOP_RV_LS_LBITS ? LZOP_RV_LS_LMASK + 1 : 0))
+	LZOP_RV_LS_DBITS=$((64 - LZOP_RV_LS_LBITS - LZOP_BITS))
+	LZOP_RV_LS_DMASK=$(((1 << LZOP_RV_LS_DBITS) - 1))
+	LZOP_RV_LS_DSHIFT=$((LZOP_RV_LS_LBITS + LZOP_BITS))
+	LZOP_RV_LS_DRANGE=$((LZOP_RV_LS_DBITS ? LZOP_RV_LS_DMASK + 1 : 0))
+	LZOP_BRK_LEN=1000000000000
 }
 
 enc_st_lit() {
 	local size=$(((${#1}) / 2)) ; local sm1=$(($size - 1))
-	if ((sm1 < L8R)) ; then st8 $(((sm1 << LH8B) | L8))
-	elif ((sm1 < L16R)) ; then st16 $(((sm1 << LH16B) | L16))
-	else	if ((sm1 >= L32R)) ; then
-			echo "out of range: aborting (!)" >&2 ; exit 1; fi
-		st32 $(((sm1 << LH32B) | L32)) ; fi
+	st_pk64 $(((sm1 << $LZOP_BITS) | LZOP_LV))
 	echo -n $1
 }
 
 enc_st_ref() {
-	local d=$1 l=$2 f=nok
-
-	# Opcode filter by distance
-	if ((d < RD24R)) ; then
-		if ((d < RD16a)) ; then f=r16a ; elif ((d < RD16b))
-		then f=r16b ; elif ((d < RD16)) ; then f=r16
-		elif ((d < RD24a)) ; then f=r24a ; elif ((d < RD24b))
-		then f=r24b ; elif ((d < RD24c)) ; then f=r24c ; else f=r24 ; fi
-	elif ((d < RD32)) ; then f=r32
-	elif ((d < RD40)) ; then f=r40 else f=r72 ; fi
-
-	# Opcode chosen by distance and run length
-	case $f in
-	r16a)	if ((l < RL16a)) ; then st16 $(((d | (l << RD16aB)) << \
-						 H16aB | R16a)) ; return ; fi ;&
-	r16b)	if ((l < RL16b)) ; then st16 $(((d | (l << RD16bB)) << \
-						 H16bB | R16b)) ; return ; fi ;&
-	r16)	if ((l < RL16)) ; then st16 $(((d | (l << RD16B)) << \
-						H16B | R16)) ; return ; fi ;&
-	r24a)	if ((l < RL24a)) ; then st24 $(((d | (l << RD24aB)) << \
-						 H24aB | R24a)) ; return ; fi ;&
-	r24b)	if ((l < RL24b)) ; then st24 $(((d | (l << RD24bB)) << \
-						 H24bB | R24b)) ; return ; fi ;&
-	r24c)	if ((l < RL24c)) ; then st24 $(((d | (l << RD24cB)) << \
-						 H24cB | R24c)) ; return ; fi ;&
-	r24)	if ((l < RL24)) ; then st24 $(((d | (l << RD24B)) << \
-						H24B | R24)) ; return ; fi ;&
-	r32)	if ((l < RL32)) ; then st32 $(((d | (l << RD32B)) << \
-						H32B | R32)) ; return ; fi ;&
-	r40)	if ((l < RL40)) ; then
-			st8 $((0xff & ((d << H40B) | R40)))
-			st32 $(((d >> H40B) | \
-				(l << (RD40B - H40B)))) ; return ; fi ;&
-	r72)	if ((l < RL72)) ; then
-			st8 $R72 ; st32 $d ; st32 $l ; return ; fi ;&
-	esac
+	local dm1=$1 lm4=$2
+	if ((dm1 < LZOP_RV_LS_DRANGE && lm4 < LZOP_RV_LS_LRANGE)) ; then
+		st_pk64 $(((dm1 << LZOP_RV_LS_DSHIFT) | \
+			   (lm4 << LZOP_RV_LS_LSHIFT) | LZOP_RV_LS))
+	else
+		st_pk64 $(((lm4 << LZOP_BITS) | LZOP_RV_LV)) ; st_pk64 $dm1
+	fi
 }
 
-enc_st_blk_brk() {
-	st8 $R72 ; st32 $((0xffffffff)) ; st32 $((0xffffffff)) ; }
+enc_st_blk_brk() { enc_st_ref 0 $((LZOP_BRK_LEN - 4)) ; }
 
 # Encoding/compression function
 lzb_enc() {
-	lz_globals
 	declare -A lut
 	local buf clx clxs d1 i l lg last len l1 plit w32
 	for ((lg = 0; ; lg=$((lg + l)))) ; do
@@ -116,6 +60,8 @@ lzb_enc() {
 
 		# Insert block separator between compressed blocks
 		if ((lg > 0)) ; then enc_st_blk_brk ; fi
+
+		lut[${buf:0:8}]=0 # first 32-bit chunk
 
 		# Data compression loop
 		smx=$((l - 8))
@@ -142,8 +88,6 @@ lzb_enc() {
 
 			# Avoid encoding short distant references
 			l1=$(((len / 2) - 4)) ; d1=$((((i - last) / 2) - 1))
-			if ((l1 < 4 && d1 > RD32)) ; then
-				i=$((i + 2)) ; continue ; fi
 
 			# Store pending literals
 			if ((plit != i)) ; then
@@ -180,65 +124,35 @@ dec_ld_lit() { # $1: literal count
 
 # Decoding/decompression function
 lzb_dec() {
-	lz_globals
-	local b0b b0 b1 b12 b123 b1234 b32 cnt dist len dist0 len0 m op
+	local op len dist
 	# Opcode processing loop (literal and reference opcodes)
 	for ((;;)) ; do
-		read -N 2 b0
-		if ((${#b0} != 2)) ; then break ; fi # eof check
+		op=$(ld_pk64)
+		if [ "$op" == "" ] ; then break ; fi
+		if (((op & LZOP_MASK) == LZOP_LV)) ; then
+			len=$(((op >> LZOP_BITS) + 1))
+			#echo "LZOP_LV ($len)" >&2
+			dec_ld_lit $len
+			continue
+		fi
+		if (((op & LZOP_RV_LS_MASK) == LZOP_RV_LS)) ; then
+			len=$((((op >> LZOP_RV_LS_LSHIFT) & \
+				LZOP_RV_LS_LMASK) + 4))
+			dist=$((((op >> LZOP_RV_LS_DSHIFT) & \
+				 LZOP_RV_LS_DMASK) + 1))
+			#echo "LZOP_RV_LS ($dist, $len)" >&2
+		else
+			# LZOP_RV_LV
+			len=$(((op >> LZOP_BITS) + 4))
+			dist=$(($(ld_pk64) + 1))
+			if ((dist == 1 && len == LZOP_BRK_LEN)) ; then
+				echo -n $g_out ; g_out= ; continue
+				#echo "LZOP BRK" >&2
+			fi
+			#echo "LZOP_RV_LV ($dist, $len)" >&2
+		fi
 
-		# 2-bit opcode processing
-		b0b=$(ld8 $b0)
-		if (((b0b & OPMASK2) == R16)) ; then
-			read -N 2 b1 ; m=$(($(ld16 $b0$b1) >> H16B))
-			dec_ld_ref $(((m & ((1 << RD16B) - 1)) + 1)) \
-				     $(((m >> RD16B) + 4))
-			continue ; fi
-
-		# 4-bit opcode processing
-		op=$((b0b & OPMASK4))
-		case $op in
-		$R16b)	read -N 2 b1 ; m=$(($(ld16 $b0$b1) >> H16bB))
-			dec_ld_ref $(((m & ((1 << RD16bB) - 1)) + 1)) \
-				   $(((m >> RD16bB) + 4)) ; continue ;;
-		$R16a)	read -N 2 b1 ; m=$(($(ld16 $b0$b1) >> H16aB))
-			dec_ld_ref $(((m & ((1 << RD16aB) - 1)) + 1)) \
-				   $(((m >> RD16aB) + 4)) ; continue ;;
-		$R24c)	read -N 4 b12 ; m=$(($(ld24 $b0$b12) >> H24cB))
-			dec_ld_ref $(((m & ((1 << RD24cB) - 1)) + 1)) \
-				   $(((m >> RD24cB) + 4)) ; continue ;;
-		$R24b)	read -N 4 b12 ; m=$(($(ld24 $b0$b12) >> H24bB))
-			dec_ld_ref $(((m & ((1 << RD24bB) - 1)) + 1)) \
-				   $(((m >> RD24bB) + 4)) ; continue ;;
-		$R24a)	read -N 4 b12 ; m=$(($(ld24 $b0$b12) >> H24aB))
-			dec_ld_ref $(((m & ((1 << RD24aB) - 1)) + 1)) \
-				   $(((m >> RD24aB) + 4)) ; continue ;;
-		$R24)	read -N 4 b12 ; m=$(($(ld24 $b0$b12) >> H24B))
-			dec_ld_ref $(((m & ((1 << RD24B) - 1)) + 1)) \
-				   $(((m >> RD24B) + 4)) ; continue ;;
-		$R32)	read -N 6 b123 ; m=$(($(ld32 $b0$b123) >> H32B))
-			dec_ld_ref $(((m & ((1 << RD32B) - 1)) + 1)) \
-				   $(((m >> RD32B) + 4)) ; continue ;;
-		$R40)	read -N 8 b1234 ; m=$(ld32 $b1234)
-			dec_ld_ref $((((((b0b >> H40B) | (m << H40B)) &\
-					((1 << RD40B) - 1))) + 1)) \
-				   $(((m >> (RD40B - H40B)) + 4))
-			continue ;;
-		$R72)	read -N 8 dist0 ; read -N 8 len0
-			# Block separator handling: flush output
-			if [[ $dist0 == ffffffff && $len0 == ffffffff ]] ; then
-				echo -n $g_out ; g_out= ; continue ; fi
-			dec_ld_ref $(($(ld32 $dist0) + 1)) \
-				   $(($(ld32 $len0) + 4)) ; continue ;;
-		$L8)	cnt=$(((b0b >> LH8B) + 1)) ; dec_ld_lit $cnt
-			continue ;;
-		$L16)	read -N 2 b1 ; cnt=$((($(ld16 $b0$b1) >> LH16B) + 1))
-			dec_ld_lit $cnt ; continue ;;
-		$L32)	read -N 6 b123
-			cnt=$((($(ld32 $b0$b123) >> LH32B) + 1))
-			dec_ld_lit $cnt ; continue ;;
-		*)	echo "UNKNOWN OPCODE (0x$b0): aborting!" >&2 ; exit 1 ;;
-		esac
+		dec_ld_ref $dist $len
 	done
 	echo -n $g_out ; g_out=
 }
@@ -331,14 +245,58 @@ st24() { printf %02x%02x%02x $(($1 & 0xff)) $((($1 >> 8) & 0xff)) \
 		$((($1 >> 16) & 0xff)) ; }
 st32() { printf %02x%02x%02x%02x $(($1 & 0xff)) $((($1 >> 8) & 0xff)) \
 		$((($1 >> 16) & 0xff)) $((($1 >> 24) & 0xff)) ; }
+st40() { st8 $(($1 & 0xff)) ; st32 $(($1 >> 8)) ; }
+st48() { st16 $(($1 & 0xffff)) ; st32 $(($1 >> 16)) ; }
+st56() { st24 $(($1 & 0xffffff)) ; st32 $(($1 >> 24)) ; }
+st64() { st32 $(($1 & 0xffffffff)) ; st32 $(($1 >> 32)) ; }
 ld8() { echo -n "$((0x${1:0:2}))" ; }
 ld16() { echo -n "$((0x${1:2:2}${1:0:2}))" ; }
 ld24() { echo -n "$((0x${1:4:2}${1:2:2}${1:0:2}))" ; }
 ld32() { echo -n "$((0x${1:6:2}${1:4:2}${1:2:2}${1:0:2}))" ; }
+ld40() { echo -n "$((0x${1:8:2}${1:6:2}${1:4:2}${1:2:2}${1:0:2}))" ; }
+ld48() { echo -n "$((0x${1:10:2}${1:8:2}${1:6:2}${1:4:2}${1:2:2}${1:0:2}))" ; }
+ld56() { echo -n "$((0x${1:12:2}${1:10:2}${1:8:2}${1:6:2}${1:4:2}${1:2:2}${1:0:2}))" ; }
+ld64() { echo -n "$((0x${1:14:2}${1:12:2}${1:10:2}${1:8:2}${1:6:2}${1:4:2}${1:2:2}${1:0:2}))" ; }
 enc_hex() { local LC_ALL=C IFS=""
 	    while read -r -d '' -n 1 c ; do printf "%02x" "'$c" ; done ; }
 dec_hex() { while read -d '' -n 2 hl ; do printf "\x$hl" ; done ; }
 binop() { enc_hex | $@ | dec_hex ; }
+st_pk64() {
+	local v=$(($1 + 0))
+	if ((v <= 0x7f)) ; then st8 $((v << 1 | 1)) ; return ; fi
+	if ((v <= 0x3fff)) ; then st16 $((v << 2 | 2)) ; return ; fi
+	if ((v <= 0x1fffff)) ; then st24 $((v << 3 | 4)) ; return ; fi
+	if ((v <= 0xfffffff)) ; then st32 $((v << 4 | 8)) ; return ; fi
+	if ((v <= 0x7ffffffff)) ; then st40 $((v << 5 | 16)) ; return ; fi
+	if ((v <= 0x3ffffffffff)) ; then st48 $((v << 6 | 32)) ; return ; fi
+	if ((v <= 0x1ffffffffffff)) ; then st56 $((v << 7 | 64)) ; return ; fi
+	st8 128 ; st64 $v
+}
+sz_pk64() {
+	local h=$1
+	if ((h & 1)) ; then echo -n 1 ; return ; fi
+	if ((h & 2)) ; then echo -n 2 ; return ; fi
+	if ((h & 4)) ; then echo -n 3 ; return ; fi
+	if ((h & 8)) ; then echo -n 4 ; return ; fi
+	if ((h & 16)) ; then echo -n 5 ; return ; fi
+	if ((h & 32)) ; then echo -n 6 ; return ; fi
+	if ((h & 64)) ; then echo -n 7 ; return ; fi
+	if ((h & 128)) ; then echo -n 9 ; return ; fi
+	echo -n 0
+}
+ld_pk64() {
+	local a b h ; read -N 2 a ; h=$(ld8 $a)
+	case "$(sz_pk64 $h)" in
+	1) echo -n $((h >> 1)) ;;
+	2) read -N 2 b ; echo -n $(($(ld16 $a$b) >> 2)) ; return ;;
+	3) read -N 4 b ; echo -n $(($(ld24 $a$b) >> 3)) ; return ;;
+	4) read -N 6 b ; echo -n $(($(ld32 $a$b) >> 4)) ; return ;;
+	5) read -N 8 b ; echo -n $(($(ld40 $a$b) >> 5)) ; return ;;
+	6) read -N 10 b ; echo -n $(($(ld48 $a$b) >> 6)) ; return ;;
+	7) read -N 12 b ; echo -n $(($(ld56 $a$b) >> 7)) ; return ;;
+	9) read -N 16 b ; echo -n $(($(ld64 $b))) ; return ;;
+	esac
+}
 show_help() {
 	local P IFS='/' ; for P in $1 ; do continue ; done
 	echo -e "LZB data compression and other tools" >&2
